@@ -1,0 +1,229 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Pantry & Expiry Tracker</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <script src="https://unpkg.com/html5-qrcode" type="text/javascript"></script>
+  <style>
+    body { font-family: 'Poppins', sans-serif; }
+    @keyframes fadeIn { from { opacity: 0; transform: translateY(-10px); } to { opacity: 1; transform: translateY(0); } }
+    .fade-in { animation: fadeIn 0.4s ease-out forwards; }
+    .modal { display: none; position: fixed; inset: 0; background-color: rgba(0,0,0,0.5); z-index: 50; }
+    .modal-content { background: white; margin: 10% auto; padding: 20px; border-radius: 12px; width: 80%; max-width: 500px; }
+    .close-button { float: right; cursor: pointer; font-size: 24px; }
+    .spinner { border: 2px solid rgba(0, 0, 0, 0.1); border-left-color: #fff; border-radius: 50%; width: 16px; height: 16px; animation: spin 1s linear infinite; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+  </style>
+</head>
+<body class="bg-gray-50 text-gray-800">
+
+  <div class="container mx-auto p-4 max-w-4xl">
+    <header class="text-center my-8">
+      <h1 class="text-4xl font-bold text-indigo-600">ExpiryWise</h1>
+      <p class="text-lg text-gray-500 mt-2">Smart Pantry Management</p>
+    </header>
+
+    <div id="alerts-section" class="mb-8 space-y-3"></div>
+
+    <div class="grid grid-cols-1 md:grid-cols-2 gap-8">
+      <div class="space-y-8">
+        <div class="bg-white p-6 rounded-2xl shadow-lg">
+          <h2 class="text-2xl font-semibold mb-4">Add Item</h2>
+          <form id="add-item-form" class="space-y-4">
+            <div>
+              <label for="item-name" class="block text-sm font-medium text-gray-700">Item Name</label>
+              <div class="flex mt-1">
+                <input type="text" id="item-name" required placeholder="e.g., Bread" class="w-full px-4 py-2 border rounded-l-lg" />
+                <button type="button" id="scan-btn" class="bg-gray-700 hover:bg-gray-800 text-white p-2 rounded-r-lg">📷</button>
+              </div>
+            </div>
+            <div>
+              <label for="exp-date" class="block text-sm font-medium text-gray-700 mb-1">Expiry Date</label>
+              <input type="date" id="exp-date" required class="w-full px-4 py-2 border rounded-lg" />
+            </div>
+            <button type="submit" class="w-full bg-indigo-600 text-white py-2 rounded-lg hover:bg-indigo-700">Add Item</button>
+          </form>
+        </div>
+
+        <div class="bg-white p-6 rounded-2xl shadow-lg">
+          <h2 class="text-2xl font-semibold mb-4">Recipe Finder</h2>
+          <div id="ingredient-checklist" class="space-y-2 border p-3 rounded-lg mb-4">
+            <p class="text-gray-400">Your ingredients will appear here.</p>
+          </div>
+          <button id="find-recipes-btn" class="w-full bg-teal-500 text-white py-2 rounded-lg hover:bg-teal-600">Find Recipes</button>
+        </div>
+      </div>
+
+      <div class="bg-white p-6 rounded-2xl shadow-lg">
+        <h2 class="text-2xl font-semibold mb-4">My Pantry</h2>
+        <div id="pantry-list" class="space-y-3 max-h-[60vh] overflow-y-auto">
+          <div id="loading-state" class="text-center py-10"><p class="text-gray-500">Pantry is empty.</p></div>
+        </div>
+      </div>
+    </div>
+
+    <div id="recipe-results-container" class="mt-10"></div>
+  </div>
+
+  <div id="scanner-modal" class="modal">
+    <div class="modal-content">
+      <span id="close-scanner" class="close-button">&times;</span>
+      <h3 class="text-xl font-semibold mb-4">Scan Barcode</h3>
+      <div id="reader"></div>
+    </div>
+  </div>
+
+  <script>
+    const itemForm = document.getElementById('add-item-form');
+    const itemNameInput = document.getElementById('item-name');
+    const expiryDateInput = document.getElementById('exp-date');
+    const pantryList = document.getElementById('pantry-list');
+    const ingredientChecklist = document.getElementById('ingredient-checklist');
+    const findRecipesBtn = document.getElementById('find-recipes-btn');
+    const recipeResultsContainer = document.getElementById('recipe-results-container');
+    const scannerModal = document.getElementById('scanner-modal');
+    const scanBtn = document.getElementById('scan-btn');
+    const closeScannerBtn = document.getElementById('close-scanner');
+    const alertsSection = document.getElementById('alerts-section');
+    let pantry = [];
+    let scanner;
+
+    expiryDateInput.min = new Date().toISOString().split('T')[0];
+
+    // Add item
+    itemForm.addEventListener('submit', (e) => {
+      e.preventDefault();
+      const name = itemNameInput.value.trim();
+      const expiry = expiryDateInput.value;
+      if (!name || !expiry) return;
+      const item = { id: Date.now(), name, expiry };
+      pantry.push(item);
+      renderPantry();
+      itemForm.reset();
+    });
+
+    // Render pantry
+    function renderPantry() {
+      pantryList.innerHTML = '';
+      ingredientChecklist.innerHTML = '';
+      alertsSection.innerHTML = '';
+      if (pantry.length === 0) {
+        pantryList.innerHTML = `<p class="text-gray-400 text-center py-6">No items yet.</p>`;
+        return;
+      }
+      pantry.forEach(item => {
+        pantryList.appendChild(createItemCard(item));
+        ingredientChecklist.appendChild(createIngredientCheckbox(item));
+        checkAlert(item);
+      });
+    }
+
+    function createItemCard(item) {
+      const div = document.createElement('div');
+      const { days, status, color } = getExpiryStatus(item.expiry);
+      div.className = `fade-in p-4 rounded-lg shadow flex justify-between items-center border-l-4 ${color}`;
+      div.innerHTML = `
+        <div>
+          <p class="font-semibold">${item.name}</p>
+          <p class="text-sm text-gray-600">${status}</p>
+        </div>
+        <button onclick="deleteItem(${item.id})" class="text-red-500">🗑</button>`;
+      return div;
+    }
+
+    function getExpiryStatus(dateStr) {
+      const today = new Date();
+      const expiry = new Date(dateStr);
+      const diff = Math.ceil((expiry - today) / (1000 * 60 * 60 * 24));
+      if (diff < 0) return { days: diff, status: `Expired ${-diff} day(s) ago`, color: 'border-red-500' };
+      if (diff === 0) return { days: diff, status: 'Expires today', color: 'border-yellow-500' };
+      if (diff <= 2) return { days: diff, status: `Expires in ${diff} day(s)`, color: 'border-yellow-400' };
+      return { days: diff, status: `Expires on ${dateStr}`, color: 'border-green-500' };
+    }
+
+    function deleteItem(id) {
+      pantry = pantry.filter(i => i.id !== id);
+      renderPantry();
+    }
+
+    function createIngredientCheckbox(item) {
+      const label = document.createElement('label');
+      label.className = 'flex items-center space-x-2';
+      label.innerHTML = `<input type="checkbox" value="${item.name}" class="h-4 w-4 text-indigo-600"> <span>${item.name}</span>`;
+      return label;
+    }
+
+    function checkAlert(item) {
+      const { days } = getExpiryStatus(item.expiry);
+      if (days >= 0 && days <= 2) {
+        const div = document.createElement('div');
+        div.className = 'bg-yellow-100 border-l-4 border-yellow-500 p-3 rounded';
+        div.innerHTML = `<b>${item.name}</b> expires in ${days} day(s)!`;
+        alertsSection.appendChild(div);
+      }
+    }
+
+    // Recipe finder
+    findRecipesBtn.addEventListener('click', async () => {
+      const ingredients = Array.from(ingredientChecklist.querySelectorAll('input:checked')).map(cb => cb.value);
+      if (ingredients.length === 0) {
+        alert("Select an ingredient first!");
+        return;
+      }
+      recipeResultsContainer.innerHTML = `<p class="text-center">Finding recipes...</p>`;
+      try {
+        const res = await fetch(`https://www.themealdb.com/api/json/v1/1/filter.php?i=${encodeURIComponent(ingredients[0])}`);
+        const data = await res.json();
+        if (!data.meals) {
+          recipeResultsContainer.innerHTML = `<p class="text-center text-gray-500">No recipes found.</p>`;
+          return;
+        }
+        recipeResultsContainer.innerHTML = `
+          <h2 class="text-2xl font-semibold mb-4 text-center">Recipe Ideas</h2>
+          <div class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4">
+            ${data.meals.slice(0, 6).map(m => `
+              <a href="https://www.themealdb.com/meal/${m.idMeal}" target="_blank" class="block bg-white shadow rounded-lg overflow-hidden hover:shadow-lg">
+                <img src="${m.strMealThumb}" alt="${m.strMeal}" class="w-full h-40 object-cover">
+                <div class="p-3 text-center font-medium">${m.strMeal}</div>
+              </a>
+            `).join('')}
+          </div>`;
+      } catch (err) {
+        console.error(err);
+        recipeResultsContainer.innerHTML = `<p class="text-center text-red-500">Error fetching recipes.</p>`;
+      }
+    });
+
+    // Scanner logic
+    scanBtn.addEventListener('click', startScanner);
+    closeScannerBtn.addEventListener('click', stopScanner);
+
+    async function startScanner() {
+      scannerModal.style.display = 'block';
+      try {
+        scanner = new Html5Qrcode("reader");
+        await scanner.start({ facingMode: "environment" }, { fps: 10, qrbox: 250 },
+          (decodedText) => {
+            itemNameInput.value = decodedText;
+            stopScanner();
+          });
+      } catch (err) {
+        alert("Camera error: " + err.message);
+        stopScanner();
+      }
+    }
+
+    async function stopScanner() {
+      if (scanner) {
+        await scanner.stop();
+        scanner.clear();
+        scanner = null;
+      }
+      scannerModal.style.display = 'none';
+    }
+  </script>
+</body>
+</html>
